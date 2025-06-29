@@ -1,1 +1,0 @@
-/usr/bin/c++ -g CMakeFiles/non_blocking_unix_socket_server_test.dir/non_blocking_unix_socket_server.cpp.o -o non_blocking_unix_socket_server_test  ../libnon_blocking_unix_socket_server.a /usr/lib/x86_64-linux-gnu/libgtest_main.a /usr/lib/x86_64-linux-gnu/libgtest.a 
