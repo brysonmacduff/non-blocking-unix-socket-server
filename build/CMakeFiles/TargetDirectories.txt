@@ -1,0 +1,14 @@
+/home/bryson/projects/c++/non-blocking-unix-socket-server/build/CMakeFiles/edit_cache.dir
+/home/bryson/projects/c++/non-blocking-unix-socket-server/build/CMakeFiles/rebuild_cache.dir
+/home/bryson/projects/c++/non-blocking-unix-socket-server/build/non_blocking_unix_socket_server/CMakeFiles/non_blocking_unix_socket_server.dir
+/home/bryson/projects/c++/non-blocking-unix-socket-server/build/non_blocking_unix_socket_server/CMakeFiles/edit_cache.dir
+/home/bryson/projects/c++/non-blocking-unix-socket-server/build/non_blocking_unix_socket_server/CMakeFiles/rebuild_cache.dir
+/home/bryson/projects/c++/non-blocking-unix-socket-server/build/non_blocking_unix_socket_server/test/CMakeFiles/non_blocking_unix_socket_server_test.dir
+/home/bryson/projects/c++/non-blocking-unix-socket-server/build/non_blocking_unix_socket_server/test/CMakeFiles/edit_cache.dir
+/home/bryson/projects/c++/non-blocking-unix-socket-server/build/non_blocking_unix_socket_server/test/CMakeFiles/rebuild_cache.dir
+/home/bryson/projects/c++/non-blocking-unix-socket-server/build/client/CMakeFiles/client.dir
+/home/bryson/projects/c++/non-blocking-unix-socket-server/build/client/CMakeFiles/edit_cache.dir
+/home/bryson/projects/c++/non-blocking-unix-socket-server/build/client/CMakeFiles/rebuild_cache.dir
+/home/bryson/projects/c++/non-blocking-unix-socket-server/build/src/CMakeFiles/unix_socket_server.dir
+/home/bryson/projects/c++/non-blocking-unix-socket-server/build/src/CMakeFiles/edit_cache.dir
+/home/bryson/projects/c++/non-blocking-unix-socket-server/build/src/CMakeFiles/rebuild_cache.dir
