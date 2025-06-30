@@ -9,6 +9,13 @@ NonBlockingUnixSocketServer::NonBlockingUnixSocketServer(const std::string& unix
 {
 }
 
+NonBlockingUnixSocketServer::NonBlockingUnixSocketServer(std::string &&unix_socket_path, size_t client_limit, std::chrono::milliseconds blocking_timeout)
+: m_unix_socket_path(unix_socket_path)
+, m_client_limit(client_limit)
+, m_blocking_timeout(blocking_timeout)
+{
+}
+
 bool NonBlockingUnixSocketServer::Start()
 {
     // Remove the socket file if it already exists
@@ -63,12 +70,35 @@ NonBlockingUnixSocketServer::ServerState NonBlockingUnixSocketServer::GetServerS
     return m_server_state;
 }
 
+void NonBlockingUnixSocketServer::EnqueueSend(int client_file_descriptor, std::vector<char> &&bytes)
+{
+    m_tx_messages.emplace_back(TxMessage{client_file_descriptor,bytes});
+}
+
+void NonBlockingUnixSocketServer::EnqueueBroadcast(std::vector<char>&& bytes)
+{
+    for(const int& client_file_descriptor : m_client_file_descriptors)
+    {
+        EnqueueSend(client_file_descriptor,std::move(bytes));
+    }
+}
+
+void NonBlockingUnixSocketServer::SetRxCallback(RxCallback callback)
+{
+    m_rx_callback = std::move(callback);
+}
+
+const std::deque<int> &NonBlockingUnixSocketServer::GetClientFileDescriptors() const
+{
+    return m_client_file_descriptors;
+}
+
 bool NonBlockingUnixSocketServer::CreateSocket()
 {
     // Create a socket
     const int server_socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (server_socket_fd == -1) {
-        perror("UnixSocketServer::Start() -> Socket creation failed");
+        perror("NonBlockingUnixSocketServer::Start() -> Socket creation failed");
         return false;
     }
 
@@ -96,7 +126,7 @@ bool NonBlockingUnixSocketServer::Listen()
 {
      // Start listening for incoming connections
     if (listen(m_server_socket_file_descriptor, m_client_limit) == -1) {
-        perror("UnixSocketServer::Start() -> Listen failed");
+        perror("NonBlockingUnixSocketServer::Start() -> Listen failed");
         close(m_server_socket_file_descriptor);
         return false;
     }
@@ -212,50 +242,18 @@ void NonBlockingUnixSocketServer::ProcessEpollEvent()
         perror("NonBlockingUnixSocketServer::ProcessEpollEvent() -> Triggered events were erroneous.");
         return;
     }
-
-    std::cout << "NonBlockingUnixSocketServer::ProcessEpollEvent() -> Event count: " << std::to_string(event_count) << "\n";
     
-    for (int i = 0; i < event_count; ++i) {
-
+    for (int i = 0; i < event_count; ++i) 
+    {
         // if the event file descriptor is the server's, then a client has connected
-        if (events[i].data.fd == m_server_socket_file_descriptor) {
+        if (events[i].data.fd == m_server_socket_file_descriptor) 
+        {
             Accept();
         } 
         // if the event is for a client file descriptor, then handle it here
         else 
         {
-            char read_buffer[MAXIMUM_EPOLL_EVENTS];
-
-            std::cout << "NonBlockingUnixSocketServer::ProcessEpollEvent() -> Client FD: " << std::to_string(events[i].data.fd) << "\n";
-
-            // loop until there is nothing left to read
-            while(true)
-            {
-                const ssize_t bytes = read(events[i].data.fd, read_buffer, sizeof(read_buffer));
-
-                if(bytes == -1)
-                {
-                    // stop reading if the non-blocking socket reports there is nothing left to read
-                    if(errno == EAGAIN || errno == EWOULDBLOCK)
-                    {
-                        break;
-                    }
-                    else
-                    {
-                        perror("NonBlockingUnixSocketServer::ProcessEpollEvent() -> Read error: ");
-                        break;
-                    }
-                }
-
-                if(bytes == 0)
-                {
-                    DisconnectClient(events[i].data.fd);
-                }
-                else if (bytes > 0) 
-                {
-                    std::cout << "NonBlockingUnixSocketServer::ProcessEpollEvent() -> RX PAYLOAD: " << std::string(read_buffer, bytes) << "\n";
-                } 
-            }
+            HandleNonBlockingRead(events[i].data.fd);
         }
     }
 }
@@ -291,6 +289,80 @@ void NonBlockingUnixSocketServer::DisconnectClient(int client_file_descriptor)
     }
 
     std::cout << "NonBlockingUnixSocketServer::DisconnectClient() -> Disconnected client.\n";
+}
+
+void NonBlockingUnixSocketServer::HandleNonBlockingRead(int client_file_descriptor)
+{
+    std::vector<char> read_buffer(MAXIMUM_EPOLL_EVENTS);
+
+    // loop until there is nothing left to read
+    while(true)
+    {
+        const ssize_t bytes = read(client_file_descriptor, read_buffer.data(), sizeof(read_buffer));
+
+        if(bytes == -1)
+        {
+            // stop reading if the non-blocking socket reports there is nothing left to read or there is an error
+            if(errno == EAGAIN || errno == EWOULDBLOCK || errno == EBADF)
+            {
+                perror("NonBlockingUnixSocketServer::ProcessEpollEvent() -> Done reading: ");
+                break;
+            }
+        }
+
+        if(bytes == 0)
+        {
+            DisconnectClient(client_file_descriptor);
+        }
+        else if (bytes > 0) 
+        {
+            m_rx_callback(client_file_descriptor,std::move(read_buffer));
+            std::cout << "NonBlockingUnixSocketServer::ProcessEpollEvent() -> RX PAYLOAD: " << std::string(read_buffer.data(), bytes) << "\n";
+        } 
+    }
+}
+
+void NonBlockingUnixSocketServer::ProcessTxMessages()
+{
+    const TxMessage& next_tx_message = m_tx_messages.front();
+
+    for(const int& client_file_descriptor : m_client_file_descriptors)
+    {
+        if(next_tx_message.client_file_descriptor == client_file_descriptor)
+        {
+            SendToClient(next_tx_message);
+            m_tx_messages.pop_front();
+            break;
+        }
+    }
+}
+
+void NonBlockingUnixSocketServer::SendToClient(const TxMessage &tx_message)
+{
+    ssize_t total_bytes_sent = 0;
+
+    while(total_bytes_sent < tx_message.payload.size())
+    {
+        const ssize_t sent_bytes = send(tx_message.client_file_descriptor, tx_message.payload.data() + total_bytes_sent, tx_message.payload.size() - total_bytes_sent,0);
+
+        // if sent_bytes is -1, ether consider it an error and exit or wait for the socket to be ready to send, depending on errno
+        if(sent_bytes == -1)
+        {
+            if(errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                continue;
+            }
+            else if(errno == EBADF)
+            {
+                DisconnectClient(tx_message.client_file_descriptor);
+                return;
+            }
+        }
+        else if(sent_bytes > 0)
+        {
+            total_bytes_sent += sent_bytes;
+        }
+    }
 }
 
 } // namespace InterProcessCommunication

@@ -1,4 +1,5 @@
 #pragma once
+#include "i_non_blocking_server.h"
 #include <iostream>
 #include <string>
 #include <sys/socket.h>
@@ -11,7 +12,7 @@
 
 namespace InterProcessCommunication
 {
-class NonBlockingUnixSocketServer
+class NonBlockingUnixSocketServer : public INonBlockingServer
 {
 public:
 
@@ -22,8 +23,10 @@ public:
         CLOSING
     };
 
+    ~NonBlockingUnixSocketServer() = default;
     NonBlockingUnixSocketServer(const std::string& unix_socket_path, size_t client_limit = DEFAULT_CLIENT_LIMIT, std::chrono::milliseconds blocking_timeout = DEFAULT_BLOCKING_TIMEOUT);
-    
+    NonBlockingUnixSocketServer(std::string&& unix_socket_path, size_t client_limit = DEFAULT_CLIENT_LIMIT, std::chrono::milliseconds blocking_timeout = DEFAULT_BLOCKING_TIMEOUT);
+
     /*
         Tell the server to start and listen for client connection attempts.
     */
@@ -44,7 +47,18 @@ public:
     */
     ServerState GetServerState() const;
 
+    void EnqueueSend(int client_file_descriptor, std::vector<char>&& bytes) override;
+    void EnqueueBroadcast(std::vector<char>&& bytes) override;
+    void SetRxCallback(RxCallback callback) override;
+    const std::deque<int>& GetClientFileDescriptors() const override;
+
 private:
+
+    struct TxMessage
+    {
+        int client_file_descriptor;
+        std::vector<char> payload;
+    };
 
     static constexpr std::chrono::milliseconds DEFAULT_BLOCKING_TIMEOUT { 10 };
     static constexpr int MAXIMUM_EPOLL_EVENTS = 10;
@@ -56,6 +70,11 @@ private:
     const std::chrono::milliseconds m_blocking_timeout;
     std::deque<int> m_client_file_descriptors;
     ServerState m_server_state { ServerState::CLOSED };
+    RxCallback m_rx_callback = [](int client_file_descriptor, std::vector<char>&& bytes){
+        (void)client_file_descriptor;
+        (void)bytes;
+    };
+    std::deque<TxMessage> m_tx_messages;
 
     int m_server_socket_file_descriptor = -1; // server file descriptor
     int m_server_epoll_file_descriptor = -1; // server epoll file descriptor
@@ -70,6 +89,8 @@ private:
     void ProcessEpollEvent();
     void CloseServer();
     void DisconnectClient(int client_file_descriptor);
-
+    void HandleNonBlockingRead(int client_file_descriptor);
+    void ProcessTxMessages();
+    void SendToClient(const TxMessage& tx_message);
 };
 } // namespace InterProcessCommunication
