@@ -50,6 +50,8 @@ public:
     void EnqueueSend(int client_file_descriptor, std::vector<char>&& bytes) override;
     void EnqueueBroadcast(std::vector<char>&& bytes) override;
     void SetRxCallback(RxCallback callback) override;
+    void SetConnectCallback(ConnectCallback callback) override;
+    void SetDisconnectCallback(DisconnectCallback callback) override;
     const std::deque<int>& GetClientFileDescriptors() const override;
 
 private:
@@ -74,6 +76,8 @@ private:
         (void)client_file_descriptor;
         (void)bytes;
     };
+    ConnectCallback m_connect_callback = [](int client_file_descriptor){(void)client_file_descriptor;};
+    DisconnectCallback m_disconnect_callback = [](int client_file_descriptor){(void)client_file_descriptor;};
     std::deque<TxMessage> m_tx_messages;
 
     int m_server_socket_file_descriptor = -1; // server file descriptor
@@ -82,7 +86,7 @@ private:
     bool CreateSocket();
     bool Bind();
     bool Listen();
-    bool Accept();
+    bool AcceptClient();
     bool MakeFileDescriptorNonBlocking(int file_descriptor);
     bool ConfigureServerFileDescriptorForEpoll();
     bool ConfigureClientFileDescriptorForEpoll(int client_file_descriptor);

@@ -19,7 +19,7 @@
                 "isDefault": true
             }
         },
-         {
+        {
             "label": "clear-build",
             "type": "shell",
             "command": "rm -rf ${workspaceFolder}/build && mkdir ${workspaceFolder}/build",

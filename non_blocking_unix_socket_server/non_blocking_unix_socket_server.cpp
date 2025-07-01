@@ -88,6 +88,16 @@ void NonBlockingUnixSocketServer::SetRxCallback(RxCallback callback)
     m_rx_callback = std::move(callback);
 }
 
+void NonBlockingUnixSocketServer::SetConnectCallback(ConnectCallback callback)
+{
+    m_connect_callback = std::move(callback);
+}
+
+void NonBlockingUnixSocketServer::SetDisconnectCallback(DisconnectCallback callback)
+{
+    m_disconnect_callback = std::move(callback);
+}
+
 const std::deque<int> &NonBlockingUnixSocketServer::GetClientFileDescriptors() const
 {
     return m_client_file_descriptors;
@@ -97,7 +107,8 @@ bool NonBlockingUnixSocketServer::CreateSocket()
 {
     // Create a socket
     const int server_socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (server_socket_fd == -1) {
+    if (server_socket_fd == -1) 
+    {
         perror("NonBlockingUnixSocketServer::Start() -> Socket creation failed");
         return false;
     }
@@ -134,11 +145,11 @@ bool NonBlockingUnixSocketServer::Listen()
     return true;
 }
 
-bool NonBlockingUnixSocketServer::Accept()
+bool NonBlockingUnixSocketServer::AcceptClient()
 {
     if(m_client_file_descriptors.size() == m_client_limit)
     {
-        std::cout << "NonBlockingUnixSocketServer::Accept() -> Rejected client connection due to connection limit.\n";
+        std::cout << "NonBlockingUnixSocketServer::AcceptClient() -> Rejected client connection due to connection limit.\n";
         return false;
     }
 
@@ -146,7 +157,7 @@ bool NonBlockingUnixSocketServer::Accept()
 
     if(client_fd == -1)
     {
-        perror("NonBlockingUnixSocketServer::Accept() -> Failed to accept client");
+        perror("NonBlockingUnixSocketServer::AcceptClient() -> Failed to accept client");
         return false;
     }
 
@@ -164,13 +175,15 @@ bool NonBlockingUnixSocketServer::Accept()
     
     if(not epoll_ctl_result)
     {
-        perror("NonBlockingUnixSocketServer::Accept() -> Failed to confugure client file descriptor for epoll events");
+        perror("NonBlockingUnixSocketServer::AcceptClient() -> Failed to confugure client file descriptor for epoll events");
     }
 
     // save the client file descriptor, because the client has been accepted
     m_client_file_descriptors.emplace_back(client_fd);
 
-    std::cout << "NonBlockingUnixSocketServer::Accept() -> Accepted client connection: " << std::to_string(client_fd) << "\n";
+    std::cout << "NonBlockingUnixSocketServer::AcceptClient() -> Accepted client connection: " << std::to_string(client_fd) << "\n";
+
+    m_connect_callback(client_fd);
 
     return epoll_ctl_result;
 }
@@ -248,7 +261,7 @@ void NonBlockingUnixSocketServer::ProcessEpollEvent()
         // if the event file descriptor is the server's, then a client has connected
         if (events[i].data.fd == m_server_socket_file_descriptor) 
         {
-            Accept();
+            AcceptClient();
         } 
         // if the event is for a client file descriptor, then handle it here
         else 
@@ -288,6 +301,7 @@ void NonBlockingUnixSocketServer::DisconnectClient(int client_file_descriptor)
         }
     }
 
+    m_disconnect_callback(client_file_descriptor);
     std::cout << "NonBlockingUnixSocketServer::DisconnectClient() -> Disconnected client.\n";
 }
 
