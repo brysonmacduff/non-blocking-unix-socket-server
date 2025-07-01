@@ -38,12 +38,6 @@ public:
         // block the thread here until told to resume
         close_condition.acquire();
 
-        /*while(not close_condition)
-        {
-            std::this_thread::sleep_for(std::chrono::milliseconds{10});
-            std::cout << "CLIENT -> Waiting for close condition\n";
-        }*/
-
         // disconnect from the server
         close(client_socket_fd);
         end_callback();
