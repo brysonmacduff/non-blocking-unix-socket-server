@@ -1,6 +1,7 @@
 #include "non_blocking_unix_socket_server.h"
 #include <gtest/gtest.h>
 #include <thread>
+#include <semaphore>
 
 namespace InterProcessCommunication::Test
 {
@@ -13,7 +14,7 @@ protected:
     void TearDown() {}
 
 public:
-    void ConnectorClient(std::string unix_socket_path, bool& close_condition, std::function<void()> end_callback)
+    void ConnectorClient(std::string unix_socket_path, std::binary_semaphore& close_condition, std::function<void()> end_callback)
     {
         const int client_socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (client_socket_fd == -1) 
@@ -29,16 +30,19 @@ public:
         // Connect to the server
         if (connect(client_socket_fd, (struct sockaddr*)&server_address, sizeof(server_address)) == -1) 
         {
-            perror("MOCK_CLIENT -> Connect failed");
+            perror("CLIENT -> Connect failed");
             close(client_socket_fd);
             return;
         }
 
-        while(not close_condition)
+        // block the thread here until told to resume
+        close_condition.acquire();
+
+        /*while(not close_condition)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds{10});
-            std::cout << "MOCK_CLIENT -> Waiting for close condition\n";
-        }
+            std::cout << "CLIENT -> Waiting for close condition\n";
+        }*/
 
         // disconnect from the server
         close(client_socket_fd);
@@ -58,7 +62,9 @@ TEST_F(NonBlockingUnixSocketServerTest, MonitorConnection)
 {
     bool client_disconnected = false;
     bool client_connected = false;
-    bool client_close_condition = false;
+    
+    // start in locked state
+    std::binary_semaphore client_close_condition(0);
 
     NonBlockingUnixSocketServer server(m_unix_socket_path);
 
@@ -66,7 +72,8 @@ TEST_F(NonBlockingUnixSocketServerTest, MonitorConnection)
     {
         (void)client_fd;
         client_connected = true;
-        client_close_condition = true;
+        // order the mock client thread to begin to disconnect
+        client_close_condition.release();
     });
 
     server.SetDisconnectCallback([&](int client_fd)
@@ -77,7 +84,9 @@ TEST_F(NonBlockingUnixSocketServerTest, MonitorConnection)
 
     server.Start();
 
-    std::thread client_thread(&NonBlockingUnixSocketServerTest::ConnectorClient,this,m_unix_socket_path,std::ref(client_close_condition),[&](){});
+    std::thread client_thread(&NonBlockingUnixSocketServerTest::ConnectorClient,this,m_unix_socket_path,std::ref(client_close_condition),[&](){
+        std::cout << "CLIENT -> Done\n";
+    });
 
     while(not client_disconnected)
     {
