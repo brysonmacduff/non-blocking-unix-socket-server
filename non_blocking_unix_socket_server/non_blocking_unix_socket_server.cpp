@@ -70,12 +70,12 @@ NonBlockingUnixSocketServer::ServerState NonBlockingUnixSocketServer::GetServerS
     return m_server_state;
 }
 
-void NonBlockingUnixSocketServer::EnqueueSend(int client_file_descriptor, std::vector<char> &&bytes)
+void NonBlockingUnixSocketServer::EnqueueSend(int client_file_descriptor, const std::vector<char>& bytes)
 {
     m_tx_messages.emplace_back(TxMessage{client_file_descriptor,bytes});
 }
 
-void NonBlockingUnixSocketServer::EnqueueBroadcast(std::vector<char>&& bytes)
+void NonBlockingUnixSocketServer::EnqueueBroadcast(const std::vector<char>& bytes)
 {
     for(const int& client_file_descriptor : m_client_file_descriptors)
     {
@@ -124,7 +124,8 @@ bool NonBlockingUnixSocketServer::Bind()
     address.sun_family = AF_UNIX;
     strncpy(address.sun_path, m_unix_socket_path.c_str(), sizeof(address.sun_path) - 1);
 
-    if (bind(m_server_socket_file_descriptor, (struct sockaddr*)&address, sizeof(address)) == -1) {
+    if (bind(m_server_socket_file_descriptor, (struct sockaddr*)&address, sizeof(address)) == -1) 
+    {
         perror("UnixSocketServer::Bind() -> Bind failed");
         close(m_server_socket_file_descriptor);
         return false;
@@ -136,7 +137,8 @@ bool NonBlockingUnixSocketServer::Bind()
 bool NonBlockingUnixSocketServer::Listen()
 {
      // Start listening for incoming connections
-    if (listen(m_server_socket_file_descriptor, m_client_limit) == -1) {
+    if (listen(m_server_socket_file_descriptor, m_client_limit) == -1) 
+    {
         perror("NonBlockingUnixSocketServer::Start() -> Listen failed");
         close(m_server_socket_file_descriptor);
         return false;
@@ -181,7 +183,7 @@ bool NonBlockingUnixSocketServer::AcceptClient()
     // save the client file descriptor, because the client has been accepted
     m_client_file_descriptors.emplace_back(client_fd);
 
-    std::cout << "NonBlockingUnixSocketServer::AcceptClient() -> Accepted client connection: " << std::to_string(client_fd) << "\n";
+    std::cout << "NonBlockingUnixSocketServer::AcceptClient() -> Accepted client connection with file descriptor: " << std::to_string(client_fd) << "\n";
 
     m_connect_callback(client_fd);
 
@@ -236,6 +238,7 @@ bool NonBlockingUnixSocketServer::ConfigureClientFileDescriptorForEpoll(int clie
 void NonBlockingUnixSocketServer::Run()
 {
     ProcessEpollEvent();
+    ProcessTxMessages();
 }
 
 void NonBlockingUnixSocketServer::ProcessEpollEvent()
@@ -302,7 +305,7 @@ void NonBlockingUnixSocketServer::DisconnectClient(int client_file_descriptor)
     }
 
     m_disconnect_callback(client_file_descriptor);
-    std::cout << "NonBlockingUnixSocketServer::DisconnectClient() -> Disconnected client.\n";
+    std::cout << "NonBlockingUnixSocketServer::DisconnectClient() -> Disconnected client with file descriptor: " << std::to_string(client_file_descriptor) << "\n";
 }
 
 void NonBlockingUnixSocketServer::HandleNonBlockingRead(int client_file_descriptor)
@@ -312,7 +315,7 @@ void NonBlockingUnixSocketServer::HandleNonBlockingRead(int client_file_descript
     // loop until there is nothing left to read
     while(true)
     {
-        const ssize_t bytes = read(client_file_descriptor, read_buffer.data(), sizeof(read_buffer));
+        const ssize_t bytes = read(client_file_descriptor, read_buffer.data(), read_buffer.size());
 
         if(bytes == -1)
         {
@@ -330,14 +333,21 @@ void NonBlockingUnixSocketServer::HandleNonBlockingRead(int client_file_descript
         }
         else if (bytes > 0) 
         {
-            m_rx_callback(client_file_descriptor,std::move(read_buffer));
-            std::cout << "NonBlockingUnixSocketServer::ProcessEpollEvent() -> RX PAYLOAD: " << std::string(read_buffer.data(), bytes) << "\n";
+            std::vector<char> rx_payload(read_buffer.data(), read_buffer.data() + bytes);
+            m_rx_callback(client_file_descriptor,rx_payload);
+            std::cout << "NonBlockingUnixSocketServer::ProcessEpollEvent() -> RX PAYLOAD: " << std::string(rx_payload.data(), rx_payload.size()) << "\n";
+            continue;
         } 
     }
 }
 
 void NonBlockingUnixSocketServer::ProcessTxMessages()
 {
+    if(m_tx_messages.empty())
+    {
+        return;
+    }
+
     const TxMessage& next_tx_message = m_tx_messages.front();
 
     for(const int& client_file_descriptor : m_client_file_descriptors)

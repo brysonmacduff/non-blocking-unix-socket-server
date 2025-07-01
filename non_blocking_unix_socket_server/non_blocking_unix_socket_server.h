@@ -47,8 +47,8 @@ public:
     */
     ServerState GetServerState() const;
 
-    void EnqueueSend(int client_file_descriptor, std::vector<char>&& bytes) override;
-    void EnqueueBroadcast(std::vector<char>&& bytes) override;
+    void EnqueueSend(int client_file_descriptor, const std::vector<char>& bytes) override;
+    void EnqueueBroadcast(const std::vector<char>& bytes) override;
     void SetRxCallback(RxCallback callback) override;
     void SetConnectCallback(ConnectCallback callback) override;
     void SetDisconnectCallback(DisconnectCallback callback) override;
@@ -72,7 +72,7 @@ private:
     const std::chrono::milliseconds m_blocking_timeout;
     std::deque<int> m_client_file_descriptors;
     ServerState m_server_state { ServerState::CLOSED };
-    RxCallback m_rx_callback = [](int client_file_descriptor, std::vector<char>&& bytes){
+    RxCallback m_rx_callback = [](int client_file_descriptor, const std::vector<char>& bytes){
         (void)client_file_descriptor;
         (void)bytes;
     };
@@ -90,10 +90,16 @@ private:
     bool MakeFileDescriptorNonBlocking(int file_descriptor);
     bool ConfigureServerFileDescriptorForEpoll();
     bool ConfigureClientFileDescriptorForEpoll(int client_file_descriptor);
+    /*
+        This function processes events that are returned from epoll_wait, such as client connects, disconnects, and payloads
+    */
     void ProcessEpollEvent();
     void CloseServer();
     void DisconnectClient(int client_file_descriptor);
     void HandleNonBlockingRead(int client_file_descriptor);
+    /*
+        This function sends messages to clients. Messages are queued by end-users of this server.
+    */
     void ProcessTxMessages();
     void SendToClient(const TxMessage& tx_message);
 };
