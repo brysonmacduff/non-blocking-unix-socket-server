@@ -64,7 +64,7 @@ public:
         end_callback();
     };
 
-    void ReaderSenderClient(std::string unix_socket_path, std::function<void()> end_callback, std::vector<char> scheduled_tx_payload, const std::vector<char> expected_rx_payload)
+    void ReaderSenderClient(std::string unix_socket_path, std::function<void()> end_callback, std::vector<char> scheduled_tx_payload, const std::vector<char> expected_rx_payload, std::string client_name)
     {
         bool is_expected_rx_payload_valid = false;
 
@@ -102,7 +102,7 @@ public:
                 break;
             }
 
-            std::cout << "CLIENT -> Reading...\n";
+            std::cout << "CLIENT " << client_name << " -> Reading...\n";
             const ssize_t read_result = read(client_socket_fd,rx_buffer.data(),rx_buffer.size());
 
             EXPECT_NE(read_result,-1);
@@ -128,7 +128,7 @@ public:
 
         while(total_sent_bytes < scheduled_tx_payload.size())
         {
-            std::cout << "CLIENT -> Sending...\n";
+            std::cout << "CLIENT " << client_name << " Sending...\n";
             const ssize_t send_result = send(client_socket_fd, scheduled_tx_payload.data() + total_sent_bytes, scheduled_tx_payload.size() - total_sent_bytes, 0);
 
             EXPECT_NE(send_result,-1);
@@ -203,9 +203,9 @@ TEST_F(NonBlockingUnixSocketServerTest, MonitorConnection)
 }
 
 /*
-    This test validates that the server and send and receives payloads with one client
+    This test validates that the server can send and receive payloads with one client
 */
-TEST_F(NonBlockingUnixSocketServerTest, SendAndReceivePayload)
+TEST_F(NonBlockingUnixSocketServerTest, SendAndReceivePayload_OneClient)
 {
     NonBlockingUnixSocketServer server(m_unix_socket_path);
 
@@ -230,12 +230,6 @@ TEST_F(NonBlockingUnixSocketServerTest, SendAndReceivePayload)
         server.EnqueueSend(client_fd,server_tx_payload);
     });
 
-    // when the client disconnects, evaluate that server rx buffer matches expected client tx
-    server.SetDisconnectCallback([&](int client_fd)
-    {
-        (void)client_fd;
-    });
-
     server.Start();
 
     std::thread client_thread(&NonBlockingUnixSocketServerTest::ReaderSenderClient
@@ -247,6 +241,7 @@ TEST_F(NonBlockingUnixSocketServerTest, SendAndReceivePayload)
     }
     , client_tx_payload
     , server_tx_payload
+    , "1"
     );
 
     while(rx_buffer.size() < client_tx_payload.size())
@@ -257,6 +252,92 @@ TEST_F(NonBlockingUnixSocketServerTest, SendAndReceivePayload)
     client_thread.join();
     ASSERT_TRUE(ArePayloadsEqual(client_tx_payload,rx_buffer));
 }
+
+/*
+    This test validates that the server can send and receive payloads with two clients
+*/
+TEST_F(NonBlockingUnixSocketServerTest, SendAndReceivePayload_TwoClients)
+{
+    const uint client_count = 2;
+    NonBlockingUnixSocketServer server(m_unix_socket_path,client_count);
+
+    const std::string server_tx_string = "hello from server";
+    const std::string client_tx_string = "hello from client";
+    const std::vector<char> server_tx_payload(server_tx_string.begin(), server_tx_string.end());
+    const std::vector<char> client_tx_payload(client_tx_string.begin(), client_tx_string.end());
+
+    std::map<int,std::deque<char>> rx_buffers;
+
+    server.SetRxCallback([&](int client_fd, const std::vector<char>& rx_payload)
+    {
+        EXPECT_TRUE(rx_buffers.contains(client_fd));
+
+        for(const char& byte : rx_payload)
+        {
+            rx_buffers[client_fd].emplace_back(byte);
+        }
+    });
+
+    // qeueue up a tx payload to the newly connected client
+    server.SetConnectCallback([&](int client_fd)
+    {
+        // create an rx buffer associated to this client
+        rx_buffers.insert({client_fd,std::deque<char>()});
+
+        // send a message to this client
+        server.EnqueueSend(client_fd,server_tx_payload);
+    });
+
+    server.Start();
+
+    std::thread client_thread1(&NonBlockingUnixSocketServerTest::ReaderSenderClient
+    ,this
+    ,m_unix_socket_path
+    ,[]()
+    {
+        std::cout << "CLIENT 1 -> Done\n";
+    }
+    , client_tx_payload
+    , server_tx_payload
+    , "1"
+    );
+
+    std::thread client_thread2(&NonBlockingUnixSocketServerTest::ReaderSenderClient
+    ,this
+    ,m_unix_socket_path
+    ,[]()
+    {
+        std::cout << "CLIENT 2 -> Done\n";
+    }
+    , client_tx_payload
+    , server_tx_payload
+    , "2"
+    );
+
+    uint rx_payloads_received = 0;
+
+    while(rx_payloads_received < client_count)
+    {
+        server.Run();
+
+        for(const auto& pair : rx_buffers)
+        {
+            if(pair.second.size() == client_tx_payload.size())
+            {
+                ++rx_payloads_received;
+            }
+        }
+    }
+
+    client_thread1.join();
+    client_thread2.join();
+
+    for(const auto& pair :  rx_buffers)
+    {
+         EXPECT_TRUE(ArePayloadsEqual(client_tx_payload,pair.second));
+    }
+}
+
 
 } // InterProcessCommunication::Test
 
