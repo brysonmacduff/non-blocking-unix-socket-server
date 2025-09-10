@@ -47,8 +47,8 @@ public:
     */
     ServerState GetServerState() const;
 
-    void EnqueueSend(int client_file_descriptor, const std::vector<char>& bytes) override;
-    void EnqueueBroadcast(const std::vector<char>& bytes) override;
+    void EnqueueSend(int client_file_descriptor, const std::span<char>& bytes) override;
+    void EnqueueBroadcast(const std::span<char>& bytes) override;
     void SetRxCallback(RxCallback callback) override;
     void SetConnectCallback(ConnectCallback callback) override;
     void SetDisconnectCallback(DisconnectCallback callback) override;
@@ -72,7 +72,7 @@ private:
     const std::chrono::milliseconds m_blocking_timeout;
     std::deque<int> m_client_file_descriptors;
     ServerState m_server_state { ServerState::CLOSED };
-    RxCallback m_rx_callback = [](int client_file_descriptor, const std::vector<char>& bytes){
+    RxCallback m_rx_callback = [](int client_file_descriptor, const std::span<char>& bytes){
         (void)client_file_descriptor;
         (void)bytes;
     };

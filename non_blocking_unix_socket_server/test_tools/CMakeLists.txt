@@ -1,0 +1,1 @@
+add_executable(unix_socket_client unix_socket_client.cpp)

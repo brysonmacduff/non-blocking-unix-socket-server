@@ -5,5 +5,4 @@ set(CMAKE_CXX_STANDARD 20)
 find_package(GTest REQUIRED)
 
 add_subdirectory(non_blocking_unix_socket_server)
-add_subdirectory(client)
 add_subdirectory(src)

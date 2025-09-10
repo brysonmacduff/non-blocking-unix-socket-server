@@ -70,12 +70,13 @@ NonBlockingUnixSocketServer::ServerState NonBlockingUnixSocketServer::GetServerS
     return m_server_state;
 }
 
-void NonBlockingUnixSocketServer::EnqueueSend(int client_file_descriptor, const std::vector<char>& bytes)
+void NonBlockingUnixSocketServer::EnqueueSend(int client_file_descriptor, const std::span<char>& bytes)
 {
-    m_tx_messages.emplace_back(TxMessage{client_file_descriptor,bytes});
+    const std::vector<char> tx_bytes (bytes.begin(),bytes.end());
+    m_tx_messages.emplace_back(TxMessage{client_file_descriptor,tx_bytes});
 }
 
-void NonBlockingUnixSocketServer::EnqueueBroadcast(const std::vector<char>& bytes)
+void NonBlockingUnixSocketServer::EnqueueBroadcast(const std::span<char>& bytes)
 {
     for(const int& client_file_descriptor : m_client_file_descriptors)
     {
@@ -334,7 +335,8 @@ void NonBlockingUnixSocketServer::HandleNonBlockingRead(int client_file_descript
         else if (bytes > 0) 
         {
             std::vector<char> rx_payload(read_buffer.data(), read_buffer.data() + bytes);
-            m_rx_callback(client_file_descriptor,rx_payload);
+            std::span<char> rx_payload_view (rx_payload.begin(), rx_payload.end());
+            m_rx_callback(client_file_descriptor,rx_payload_view);
             std::cout << "NonBlockingUnixSocketServer::ProcessEpollEvent() -> RX PAYLOAD: " << std::string(rx_payload.data(), rx_payload.size()) << "\n";
             continue;
         } 

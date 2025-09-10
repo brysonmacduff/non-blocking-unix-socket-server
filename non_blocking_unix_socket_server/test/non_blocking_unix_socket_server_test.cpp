@@ -211,12 +211,12 @@ TEST_F(NonBlockingUnixSocketServerTest, SendAndReceivePayload_OneClient)
 
     const std::string server_tx_string = "hello from server";
     const std::string client_tx_string = "hello from client";
-    const std::vector<char> server_tx_payload(server_tx_string.begin(), server_tx_string.end());
+    std::vector<char> server_tx_payload(server_tx_string.begin(), server_tx_string.end());
     const std::vector<char> client_tx_payload(client_tx_string.begin(), client_tx_string.end());
 
     std::deque<char> rx_buffer;
 
-    server.SetRxCallback([&](int client_fd, const std::vector<char>& rx_payload)
+    server.SetRxCallback([&](int client_fd, const std::span<char>& rx_payload)
     {
         for(const char& byte : rx_payload)
         {
@@ -227,7 +227,8 @@ TEST_F(NonBlockingUnixSocketServerTest, SendAndReceivePayload_OneClient)
     // qeueue up a tx payload to the newly connected client
     server.SetConnectCallback([&](int client_fd)
     {
-        server.EnqueueSend(client_fd,server_tx_payload);
+        const std::span<char> server_tx_payload_view (server_tx_payload.begin(),server_tx_payload.end());
+        server.EnqueueSend(client_fd,server_tx_payload_view);
     });
 
     server.Start();
@@ -263,12 +264,12 @@ TEST_F(NonBlockingUnixSocketServerTest, SendAndReceivePayload_TwoClients)
 
     const std::string server_tx_string = "hello from server";
     const std::string client_tx_string = "hello from client";
-    const std::vector<char> server_tx_payload(server_tx_string.begin(), server_tx_string.end());
+    std::vector<char> server_tx_payload(server_tx_string.begin(), server_tx_string.end());
     const std::vector<char> client_tx_payload(client_tx_string.begin(), client_tx_string.end());
 
     std::map<int,std::deque<char>> rx_buffers;
 
-    server.SetRxCallback([&](int client_fd, const std::vector<char>& rx_payload)
+    server.SetRxCallback([&](int client_fd, const std::span<char>& rx_payload)
     {
         EXPECT_TRUE(rx_buffers.contains(client_fd));
 
