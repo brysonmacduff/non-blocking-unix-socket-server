@@ -1,18 +1,20 @@
 #pragma once
-#include "i_non_blocking_server.h"
 #include <iostream>
 #include <string>
 #include <sys/socket.h>
+#include <arpa/inet.h>
 #include <sys/un.h>
 #include <unistd.h>
 #include <sys/epoll.h>
 #include <fcntl.h>
-#include <deque>
+#include <list>
 #include <chrono>
+#include <functional>
+#include <span>
 
 namespace InterProcessCommunication
 {
-class NonBlockingUnixSocketServer : public INonBlockingServer
+class NonBlockingSocketServer
 {
 public:
 
@@ -23,9 +25,19 @@ public:
         CLOSING
     };
 
-    ~NonBlockingUnixSocketServer() = default;
-    NonBlockingUnixSocketServer(const std::string& unix_socket_path, size_t client_limit = DEFAULT_CLIENT_LIMIT, std::chrono::milliseconds blocking_timeout = DEFAULT_BLOCKING_TIMEOUT);
-    NonBlockingUnixSocketServer(std::string&& unix_socket_path, size_t client_limit = DEFAULT_CLIENT_LIMIT, std::chrono::milliseconds blocking_timeout = DEFAULT_BLOCKING_TIMEOUT);
+    struct TcpEndpoint
+    {
+        std::string ip_address;
+        uint16_t port;
+    };
+
+    using RxCallback = std::function<void(int client_file_descriptor, const std::span<char>& bytes)>;
+    using ConnectCallback = std::function<void(int client_file_descriptor)>;
+    using DisconnectCallback = std::function<void(int client_file_descriptor)>;
+
+    ~NonBlockingSocketServer() = default;
+    NonBlockingSocketServer(const std::string& unix_socket_path, size_t client_limit = DEFAULT_CLIENT_LIMIT, std::chrono::milliseconds blocking_timeout = DEFAULT_BLOCKING_TIMEOUT, bool is_verbose = false);
+    NonBlockingSocketServer(const TcpEndpoint& tcp_endpoint, size_t client_limit = DEFAULT_CLIENT_LIMIT, std::chrono::milliseconds blocking_timeout = DEFAULT_BLOCKING_TIMEOUT, bool is_verbose = false);
 
     /*
         Tell the server to start and listen for client connection attempts.
@@ -47,14 +59,29 @@ public:
     */
     ServerState GetServerState() const;
 
-    void EnqueueSend(int client_file_descriptor, const std::vector<char>& bytes) override;
-    void EnqueueBroadcast(const std::vector<char>& bytes) override;
-    void SetRxCallback(RxCallback callback) override;
-    void SetConnectCallback(ConnectCallback callback) override;
-    void SetDisconnectCallback(DisconnectCallback callback) override;
-    const std::deque<int>& GetClientFileDescriptors() const override;
+    void EnqueueSend(int client_file_descriptor, const std::span<char>& bytes);
+    void EnqueueBroadcast(const std::span<char>& bytes);
+    void SetRxCallback(RxCallback callback);
+    void SetConnectCallback(ConnectCallback callback);
+    void SetDisconnectCallback(DisconnectCallback callback);
+    const std::vector<int>& GetClientFileDescriptors() const;
 
 private:
+
+    enum EndpointMode
+    {
+        TCP,
+        UNIX_DOMAIN,
+        UNDEFINED
+    };
+
+    struct Endpoint
+    {
+        EndpointMode mode = EndpointMode::UNDEFINED;
+        std::string unix_socket_path {};
+        uint16_t tcp_port {};
+        std::string tcp_ip_address {};
+    };
 
     struct TxMessage
     {
@@ -67,24 +94,28 @@ private:
     static constexpr size_t DEFAULT_CLIENT_LIMIT = 1;
     static constexpr size_t READ_BUFFER_SIZE = 1024;
 
-    const std::string m_unix_socket_path;
+    Endpoint m_endpoint {};
     const size_t m_client_limit;
     const std::chrono::milliseconds m_blocking_timeout;
-    std::deque<int> m_client_file_descriptors;
+    std::vector<int> m_client_file_descriptors;
     ServerState m_server_state { ServerState::CLOSED };
-    RxCallback m_rx_callback = [](int client_file_descriptor, const std::vector<char>& bytes){
+    RxCallback m_rx_callback = [](int client_file_descriptor, const std::span<char>& bytes){
         (void)client_file_descriptor;
         (void)bytes;
     };
     ConnectCallback m_connect_callback = [](int client_file_descriptor){(void)client_file_descriptor;};
     DisconnectCallback m_disconnect_callback = [](int client_file_descriptor){(void)client_file_descriptor;};
-    std::deque<TxMessage> m_tx_messages;
+    std::list<TxMessage> m_tx_messages;
+    bool m_is_verbose;
 
     int m_server_socket_file_descriptor = -1; // server file descriptor
     int m_server_epoll_file_descriptor = -1; // server epoll file descriptor
     
     bool CreateSocket();
-    bool Bind();
+    bool BindToEndpoint();
+    bool BindToUnixDomainSocket();
+    bool BindToTcpSocket();
+    bool Bind(const sockaddr* address, socklen_t size);
     bool Listen();
     bool AcceptClient();
     bool MakeFileDescriptorNonBlocking(int file_descriptor);
@@ -102,5 +133,6 @@ private:
     */
     void ProcessTxMessages();
     void SendToClient(const TxMessage& tx_message);
+    void Print(const std::string& log);
 };
 } // namespace InterProcessCommunication
