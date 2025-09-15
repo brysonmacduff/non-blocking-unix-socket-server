@@ -1,32 +1,44 @@
-#include "non_blocking_unix_socket_server.h"
+#include "non_blocking_socket_server.h"
 
 namespace InterProcessCommunication
 {
-NonBlockingUnixSocketServer::NonBlockingUnixSocketServer(const std::string& unix_socket_path, size_t client_limit, std::chrono::milliseconds blocking_timeout) 
-: m_unix_socket_path(unix_socket_path)
-, m_client_limit(client_limit)
+NonBlockingSocketServer::NonBlockingSocketServer(const std::string& unix_socket_path, size_t client_limit, std::chrono::milliseconds blocking_timeout, bool is_verbose) 
+: m_client_limit(client_limit)
 , m_blocking_timeout(blocking_timeout)
+, m_is_verbose(is_verbose)
 {
+    m_endpoint.mode = EndpointMode::UNIX_DOMAIN;
+    m_endpoint.unix_socket_path = unix_socket_path;
+
+    m_client_file_descriptors.reserve(m_client_limit);
 }
 
-NonBlockingUnixSocketServer::NonBlockingUnixSocketServer(std::string &&unix_socket_path, size_t client_limit, std::chrono::milliseconds blocking_timeout)
-: m_unix_socket_path(unix_socket_path)
-, m_client_limit(client_limit)
+NonBlockingSocketServer::NonBlockingSocketServer(const TcpEndpoint& tcp_endpoint, size_t client_limit, std::chrono::milliseconds blocking_timeout, bool is_verbose)
+: m_client_limit(client_limit)
 , m_blocking_timeout(blocking_timeout)
+, m_is_verbose(is_verbose)
 {
+    m_endpoint.mode = EndpointMode::TCP;
+    m_endpoint.tcp_ip_address = tcp_endpoint.ip_address;
+    m_endpoint.tcp_port = tcp_endpoint.port;
+
+    m_client_file_descriptors.reserve(m_client_limit);
 }
 
-bool NonBlockingUnixSocketServer::Start()
+bool NonBlockingSocketServer::Start()
 {
     // Remove the socket file if it already exists
-    unlink(m_unix_socket_path.c_str());
+    if(m_endpoint.mode == EndpointMode::UNIX_DOMAIN)
+    {
+        unlink(m_endpoint.unix_socket_path.c_str());
+    }
 
     if(not CreateSocket())
     {
         return false;
     }
 
-    if(not Bind())
+    if(not BindToEndpoint())
     {
         return false;
     }
@@ -48,12 +60,12 @@ bool NonBlockingUnixSocketServer::Start()
 
     m_server_state = ServerState::RUNNING;
 
-    std::cout << "NonBlockingUnixSocketServer::Start() -> Server has started on: " << m_unix_socket_path << "\n";
+    Print("NonBlockingSocketServer::Start() -> Server has started!\n");
     
     return true;
 }
 
-bool NonBlockingUnixSocketServer::RequestStop()
+bool NonBlockingSocketServer::RequestStop()
 {
     if(m_server_state!= ServerState::RUNNING)
     {
@@ -65,18 +77,18 @@ bool NonBlockingUnixSocketServer::RequestStop()
     return true;
 }
 
-NonBlockingUnixSocketServer::ServerState NonBlockingUnixSocketServer::GetServerState() const
+NonBlockingSocketServer::ServerState NonBlockingSocketServer::GetServerState() const
 {
     return m_server_state;
 }
 
-void NonBlockingUnixSocketServer::EnqueueSend(int client_file_descriptor, const std::span<char>& bytes)
+void NonBlockingSocketServer::EnqueueSend(int client_file_descriptor, const std::span<char>& bytes)
 {
     const std::vector<char> tx_bytes (bytes.begin(),bytes.end());
     m_tx_messages.emplace_back(TxMessage{client_file_descriptor,tx_bytes});
 }
 
-void NonBlockingUnixSocketServer::EnqueueBroadcast(const std::span<char>& bytes)
+void NonBlockingSocketServer::EnqueueBroadcast(const std::span<char>& bytes)
 {
     for(const int& client_file_descriptor : m_client_file_descriptors)
     {
@@ -84,33 +96,51 @@ void NonBlockingUnixSocketServer::EnqueueBroadcast(const std::span<char>& bytes)
     }
 }
 
-void NonBlockingUnixSocketServer::SetRxCallback(RxCallback callback)
+void NonBlockingSocketServer::SetRxCallback(RxCallback callback)
 {
     m_rx_callback = std::move(callback);
 }
 
-void NonBlockingUnixSocketServer::SetConnectCallback(ConnectCallback callback)
+void NonBlockingSocketServer::SetConnectCallback(ConnectCallback callback)
 {
     m_connect_callback = std::move(callback);
 }
 
-void NonBlockingUnixSocketServer::SetDisconnectCallback(DisconnectCallback callback)
+void NonBlockingSocketServer::SetDisconnectCallback(DisconnectCallback callback)
 {
     m_disconnect_callback = std::move(callback);
 }
 
-const std::deque<int> &NonBlockingUnixSocketServer::GetClientFileDescriptors() const
+const std::vector<int> &NonBlockingSocketServer::GetClientFileDescriptors() const
 {
     return m_client_file_descriptors;
 }
 
-bool NonBlockingUnixSocketServer::CreateSocket()
+bool NonBlockingSocketServer::CreateSocket()
 {
     // Create a socket
-    const int server_socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+    int server_socket_fd = -1;
+
+    switch (m_endpoint.mode)
+    {
+    case EndpointMode::TCP:
+    {
+        server_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+        break;
+    }
+    case EndpointMode::UNIX_DOMAIN:
+    {
+        server_socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        break;
+    }
+    default:
+        break;
+    }
+
     if (server_socket_fd == -1) 
     {
-        perror("NonBlockingUnixSocketServer::Start() -> Socket creation failed");
+        perror("NonBlockingSocketServer::CreateSocket() -> Socket creation failed");
         return false;
     }
 
@@ -118,16 +148,73 @@ bool NonBlockingUnixSocketServer::CreateSocket()
     return true;
 }
 
-bool NonBlockingUnixSocketServer::Bind()
+bool NonBlockingSocketServer::BindToEndpoint()
 {
-    // Bind the socket to the specified path
+    bool result = false;
+
+    switch (m_endpoint.mode)
+    {
+        case EndpointMode::UNIX_DOMAIN:
+        {
+            result = BindToUnixDomainSocket();
+            break;
+        }
+        case EndpointMode::TCP:
+        {
+            result = BindToTcpSocket();
+            break;
+        }
+        default:
+        {
+            result = false;
+            break;
+        }
+    }
+
+    return result;
+}
+
+bool NonBlockingSocketServer::BindToUnixDomainSocket()
+{
+    // Bind the socket to the specified Unix domain endpoint
+
+    Print("NonBlockingSocketServer::BindToUnixDomainSocket() -> Binding to {" + m_endpoint.unix_socket_path + "}\n");
+
     sockaddr_un address{};
     address.sun_family = AF_UNIX;
-    strncpy(address.sun_path, m_unix_socket_path.c_str(), sizeof(address.sun_path) - 1);
+    strncpy(address.sun_path, m_endpoint.unix_socket_path.c_str(), sizeof(address.sun_path) - 1);
 
-    if (bind(m_server_socket_file_descriptor, (struct sockaddr*)&address, sizeof(address)) == -1) 
+    return Bind(reinterpret_cast<sockaddr*>(&address), sizeof(address));
+}
+
+bool NonBlockingSocketServer::BindToTcpSocket()
+{
+    // Bind the socket to the specified TCP endpoint
+
+    Print("NonBlockingSocketServer::BindToTcpSocket() -> Binding to {" + m_endpoint.tcp_ip_address + ":" + std::to_string(m_endpoint.tcp_port) + "}\n");
+
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(m_endpoint.tcp_port);
+
+    in_addr_t ip_address = inet_addr(m_endpoint.tcp_ip_address.c_str());
+
+    if (ip_address == INADDR_NONE) 
     {
-        perror("UnixSocketServer::Bind() -> Bind failed");
+        Print("NonBlockingSocketServer::BindToTcpSocket() -> Invalid IP address: {" + m_endpoint.tcp_ip_address + "}\n");
+        return false;
+    }
+
+    address.sin_addr.s_addr = INADDR_ANY;//ip_address;
+
+    return Bind(reinterpret_cast<sockaddr*>(&address), sizeof(address));
+}
+
+bool NonBlockingSocketServer::Bind(const sockaddr* address, socklen_t size)
+{
+    if (bind(m_server_socket_file_descriptor, address, size) == -1) 
+    {
+        perror("NonBlockingSocketServer::Bind() -> Bind failed");
         close(m_server_socket_file_descriptor);
         return false;
     }
@@ -135,12 +222,12 @@ bool NonBlockingUnixSocketServer::Bind()
     return true;
 }
 
-bool NonBlockingUnixSocketServer::Listen()
+bool NonBlockingSocketServer::Listen()
 {
      // Start listening for incoming connections
     if (listen(m_server_socket_file_descriptor, m_client_limit) == -1) 
     {
-        perror("NonBlockingUnixSocketServer::Start() -> Listen failed");
+        perror("NonBlockingSocketServer::Start() -> Listen failed");
         close(m_server_socket_file_descriptor);
         return false;
     }
@@ -148,11 +235,11 @@ bool NonBlockingUnixSocketServer::Listen()
     return true;
 }
 
-bool NonBlockingUnixSocketServer::AcceptClient()
+bool NonBlockingSocketServer::AcceptClient()
 {
     if(m_client_file_descriptors.size() == m_client_limit)
     {
-        std::cout << "NonBlockingUnixSocketServer::AcceptClient() -> Rejected client connection due to connection limit.\n";
+        Print("NonBlockingSocketServer::AcceptClient() -> Rejected client connection due to connection limit.\n");
         return false;
     }
 
@@ -160,7 +247,7 @@ bool NonBlockingUnixSocketServer::AcceptClient()
 
     if(client_fd == -1)
     {
-        perror("NonBlockingUnixSocketServer::AcceptClient() -> Failed to accept client");
+        perror("NonBlockingSocketServer::AcceptClient() -> Failed to accept client");
         return false;
     }
 
@@ -178,20 +265,20 @@ bool NonBlockingUnixSocketServer::AcceptClient()
     
     if(not epoll_ctl_result)
     {
-        perror("NonBlockingUnixSocketServer::AcceptClient() -> Failed to confugure client file descriptor for epoll events");
+        perror("NonBlockingSocketServer::AcceptClient() -> Failed to confugure client file descriptor for epoll events");
     }
 
     // save the client file descriptor, because the client has been accepted
     m_client_file_descriptors.emplace_back(client_fd);
 
-    std::cout << "NonBlockingUnixSocketServer::AcceptClient() -> Accepted client connection with file descriptor: " << std::to_string(client_fd) << "\n";
+    Print("NonBlockingSocketServer::AcceptClient() -> Accepted client connection with file descriptor: {" + std::to_string(client_fd) + "}\n");
 
     m_connect_callback(client_fd);
 
     return epoll_ctl_result;
 }
 
-bool NonBlockingUnixSocketServer::MakeFileDescriptorNonBlocking(int file_descriptor)
+bool NonBlockingSocketServer::MakeFileDescriptorNonBlocking(int file_descriptor)
 {
     const bool result = fcntl(file_descriptor, F_SETFL, O_NONBLOCK) != -1;
 
@@ -203,7 +290,7 @@ bool NonBlockingUnixSocketServer::MakeFileDescriptorNonBlocking(int file_descrip
     return result;
 }
 
-bool NonBlockingUnixSocketServer::ConfigureServerFileDescriptorForEpoll()
+bool NonBlockingSocketServer::ConfigureServerFileDescriptorForEpoll()
 {
     m_server_epoll_file_descriptor = epoll_create1(0);
     // define epoll event conditions for the server socket file descriptor
@@ -221,7 +308,7 @@ bool NonBlockingUnixSocketServer::ConfigureServerFileDescriptorForEpoll()
     return epoll_ctl_result;
 }
 
-bool NonBlockingUnixSocketServer::ConfigureClientFileDescriptorForEpoll(int client_file_descriptor)
+bool NonBlockingSocketServer::ConfigureClientFileDescriptorForEpoll(int client_file_descriptor)
 {
     epoll_event client_epoll_events{};
     client_epoll_events.events = EPOLLIN | EPOLLET;
@@ -236,13 +323,13 @@ bool NonBlockingUnixSocketServer::ConfigureClientFileDescriptorForEpoll(int clie
     return epoll_ctl_result;
 }
 
-void NonBlockingUnixSocketServer::Run()
+void NonBlockingSocketServer::Run()
 {
     ProcessEpollEvent();
     ProcessTxMessages();
 }
 
-void NonBlockingUnixSocketServer::ProcessEpollEvent()
+void NonBlockingSocketServer::ProcessEpollEvent()
 {
     if(m_server_state == ServerState::CLOSING)
     {
@@ -256,7 +343,7 @@ void NonBlockingUnixSocketServer::ProcessEpollEvent()
 
     if(event_count == -1)
     {
-        perror("NonBlockingUnixSocketServer::ProcessEpollEvent() -> Triggered events were erroneous.");
+        perror("NonBlockingSocketServer::ProcessEpollEvent() -> Triggered events were erroneous.");
         return;
     }
     
@@ -275,7 +362,7 @@ void NonBlockingUnixSocketServer::ProcessEpollEvent()
     }
 }
 
-void NonBlockingUnixSocketServer::CloseServer()
+void NonBlockingSocketServer::CloseServer()
 {
     for(const auto& client_fd : m_client_file_descriptors)
     {
@@ -289,7 +376,7 @@ void NonBlockingUnixSocketServer::CloseServer()
     m_server_state = ServerState::CLOSED;
 }
 
-void NonBlockingUnixSocketServer::DisconnectClient(int client_file_descriptor)
+void NonBlockingSocketServer::DisconnectClient(int client_file_descriptor)
 {
     // remove the client's file descriptor from epoll to avoid dead file descriptor issues
     epoll_ctl(m_server_epoll_file_descriptor, EPOLL_CTL_DEL, client_file_descriptor, nullptr);
@@ -306,10 +393,10 @@ void NonBlockingUnixSocketServer::DisconnectClient(int client_file_descriptor)
     }
 
     m_disconnect_callback(client_file_descriptor);
-    std::cout << "NonBlockingUnixSocketServer::DisconnectClient() -> Disconnected client with file descriptor: " << std::to_string(client_file_descriptor) << "\n";
+    Print("NonBlockingSocketServer::DisconnectClient() -> Disconnected client with file descriptor: {" + std::to_string(client_file_descriptor) + "}\n");
 }
 
-void NonBlockingUnixSocketServer::HandleNonBlockingRead(int client_file_descriptor)
+void NonBlockingSocketServer::HandleNonBlockingRead(int client_file_descriptor)
 {
     std::vector<char> read_buffer(MAXIMUM_EPOLL_EVENTS);
 
@@ -323,7 +410,7 @@ void NonBlockingUnixSocketServer::HandleNonBlockingRead(int client_file_descript
             // stop reading if the non-blocking socket reports there is nothing left to read or there is an error
             if(errno == EAGAIN || errno == EWOULDBLOCK || errno == EBADF)
             {
-                perror("NonBlockingUnixSocketServer::ProcessEpollEvent() -> Done reading: ");
+                perror("NonBlockingSocketServer::ProcessEpollEvent() -> Done reading: ");
                 break;
             }
         }
@@ -336,34 +423,34 @@ void NonBlockingUnixSocketServer::HandleNonBlockingRead(int client_file_descript
         {
             std::vector<char> rx_payload(read_buffer.data(), read_buffer.data() + bytes);
             std::span<char> rx_payload_view (rx_payload.begin(), rx_payload.end());
+            Print("NonBlockingSocketServer::ProcessEpollEvent() -> Received payload from client file descriptor: {" + std::to_string(client_file_descriptor) + "}, payload: {" + std::string(rx_payload.data(), rx_payload.size()) + "}\n");
             m_rx_callback(client_file_descriptor,rx_payload_view);
-            std::cout << "NonBlockingUnixSocketServer::ProcessEpollEvent() -> RX PAYLOAD: " << std::string(rx_payload.data(), rx_payload.size()) << "\n";
             continue;
         } 
     }
 }
 
-void NonBlockingUnixSocketServer::ProcessTxMessages()
+void NonBlockingSocketServer::ProcessTxMessages()
 {
     if(m_tx_messages.empty())
     {
         return;
     }
 
-    const TxMessage& next_tx_message = m_tx_messages.front();
+    const TxMessage next_tx_message = m_tx_messages.front();
+    m_tx_messages.pop_front();
 
     for(const int& client_file_descriptor : m_client_file_descriptors)
     {
         if(next_tx_message.client_file_descriptor == client_file_descriptor)
         {
             SendToClient(next_tx_message);
-            m_tx_messages.pop_front();
             break;
         }
     }
 }
 
-void NonBlockingUnixSocketServer::SendToClient(const TxMessage &tx_message)
+void NonBlockingSocketServer::SendToClient(const TxMessage &tx_message)
 {
     ssize_t total_bytes_sent = 0;
 
@@ -388,6 +475,14 @@ void NonBlockingUnixSocketServer::SendToClient(const TxMessage &tx_message)
         {
             total_bytes_sent += sent_bytes;
         }
+    }
+}
+
+void NonBlockingSocketServer::Print(const std::string& log)
+{
+    if(m_is_verbose)
+    {
+        std::cout << log;
     }
 }
 
